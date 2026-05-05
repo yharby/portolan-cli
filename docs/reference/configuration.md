@@ -329,6 +329,67 @@ pmtiles.bbox: "-122.5,37.5,-122.0,38.0"
 !!! note "PMTiles are optional"
     PMTiles are derivatives for rendering, not the canonical data format. GeoParquet remains the source of truth. Missing PMTiles produce a validation **warning**, not an error.
 
+## Spatial Partitioning
+
+Split large GeoParquet files into spatially-organized partitions for better query performance. Per [OGC best practices](https://github.com/opengeospatial/geoparquet/blob/main/format-specs/distributing-geoparquet.md), files over 2GB should be partitioned.
+
+```yaml
+# .portolan/config.yaml
+partitioning.enabled: true       # Enable partitioning features (default: false)
+partitioning.threshold_gb: 2     # Size threshold in GB for --preview (default: 2.0)
+partitioning.strategy: kdtree    # Partitioning strategy (default: kdtree)
+partitioning.target_rows: 120000 # Target rows per partition (default: 120,000)
+```
+
+!!! note "Standalone command"
+    Partitioning is performed via `portolan partition`, not automatically during `add`. Use the command below to partition large files before or after tracking.
+
+### Commands
+
+```bash
+# Preview partition strategy without creating files
+portolan partition buildings.parquet --preview
+
+# Partition with default settings (kdtree, 120k rows/partition)
+portolan partition buildings.parquet output/
+
+# Custom target rows
+portolan partition data.parquet output/ --target-rows 50000
+```
+
+### How It Works
+
+- Uses [geoparquet-io](https://github.com/geoparquet/geoparquet-io) KD-tree partitioning
+- Creates Hive-style directory structure per ADR-0031
+- Each partition becomes a STAC Item with its own bbox
+- Collection gets a glob asset for bulk access (e.g., `s3://bucket/collection/*.parquet`)
+
+### Output Structure
+
+```
+collection/
+├── collection.json          # Glob asset for bulk access
+├── kdtree_cell=001/
+│   ├── item.json            # STAC Item with partition bbox
+│   └── data.parquet
+├── kdtree_cell=002/
+│   ├── item.json
+│   └── data.parquet
+└── ...
+```
+
+### Settings Reference
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `partitioning.enabled` | `false` | Enable partitioning features |
+| `partitioning.threshold_gb` | `2.0` | Size threshold for `--preview` recommendation |
+| `partitioning.strategy` | `kdtree` | Spatial partitioning strategy |
+| `partitioning.target_rows` | `120000` | Target rows per partition |
+
+!!! tip "Why KD-tree?"
+    KD-tree is **data-driven**: partitions adapt to actual feature density, producing balanced partition sizes. Grid-based strategies (H3, S2, quadkey) are planned but not yet implemented.
+
 ## STAC GeoParquet Settings
 
 Generate `items.parquet` for collections with many items, enabling efficient spatial/temporal queries without N HTTP requests.

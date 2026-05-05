@@ -6249,6 +6249,178 @@ def extract_wfs_cmd(
 # =============================================================================
 
 
+@cli.command()
+@click.argument(
+    "input_file",
+    type=click.Path(exists=True, path_type=Path),
+)
+@click.argument(
+    "output_dir",
+    type=click.Path(path_type=Path),
+    required=False,
+)
+@click.option(
+    "--strategy",
+    type=click.Choice(["kdtree"]),
+    default="kdtree",
+    help="Spatial partitioning strategy. Default: kdtree (data-driven, auto-balancing).",
+)
+@click.option(
+    "--target-rows",
+    type=int,
+    default=120_000,
+    help="Target rows per partition. Default: 120,000.",
+)
+@click.option(
+    "--preview",
+    is_flag=True,
+    help="Analyze and preview partition strategy without creating files.",
+)
+@click.option(
+    "--verbose",
+    "-v",
+    is_flag=True,
+    help="Show detailed output.",
+)
+@click.pass_context
+def partition(
+    ctx: click.Context,
+    input_file: Path,
+    output_dir: Path | None,
+    strategy: str,
+    target_rows: int,
+    preview: bool,
+    verbose: bool,
+) -> None:
+    """Partition a large GeoParquet file for better query performance.
+
+    Splits a GeoParquet file into spatially-organized partitions using
+    geoparquet-io. Per OGC best practices, files over 2GB should be partitioned.
+
+    \b
+    Output structure (Hive-style, per ADR-0031):
+        output_dir/
+        ├── kdtree_cell=001/
+        │   └── data.parquet
+        ├── kdtree_cell=002/
+        │   └── data.parquet
+        └── ...
+
+    \b
+    Examples:
+        # Preview partition strategy
+        portolan partition buildings.parquet --preview
+
+        # Partition with default settings (kdtree, 120k rows/partition)
+        portolan partition buildings.parquet output/
+
+        # Custom target rows
+        portolan partition buildings.parquet output/ --target-rows 50000
+    """
+    from portolan_cli.config import get_setting
+    from portolan_cli.partitioning import partition_geoparquet, should_partition
+
+    use_json = should_output_json(ctx)
+
+    # Check if file is GeoParquet
+    if input_file.suffix.lower() != ".parquet":
+        if use_json:
+            envelope = error_envelope(
+                "partition",
+                [ErrorDetail(type="FormatError", message="Input must be a .parquet file")],
+            )
+            output_json_envelope(envelope)
+        else:
+            error("Input must be a .parquet file")
+        raise SystemExit(1)
+
+    # Preview mode: show analysis without creating files
+    if preview:
+        file_size_gb = input_file.stat().st_size / (1024 * 1024 * 1024)
+        threshold_gb = get_setting("partitioning.threshold_gb") or 2.0
+        part_enabled = get_setting("partitioning.enabled")
+        should_part = should_partition(
+            input_file, threshold_gb=float(threshold_gb), enabled=part_enabled is not False
+        )
+
+        if use_json:
+            result = {
+                "file": str(input_file),
+                "size_gb": round(file_size_gb, 2),
+                "recommended_partition": should_part,
+                "strategy": strategy,
+                "target_rows": target_rows,
+            }
+            output_json_envelope(success_envelope("partition", result))
+        else:
+            info_output(f"File: {input_file}")
+            info_output(f"Size: {file_size_gb:.2f} GB")
+            if should_part:
+                success("Partitioning recommended (> 2GB threshold)")
+            else:
+                info_output("File is under 2GB threshold - partitioning optional")
+            info_output(f"Strategy: {strategy}")
+            info_output(f"Target rows per partition: {target_rows:,}")
+        return
+
+    # Require output_dir for actual partitioning
+    if output_dir is None:
+        if use_json:
+            envelope = error_envelope(
+                "partition",
+                [
+                    ErrorDetail(
+                        type="UsageError",
+                        message="OUTPUT_DIR required (use --preview for analysis only)",
+                    )
+                ],
+            )
+            output_json_envelope(envelope)
+        else:
+            error("OUTPUT_DIR required (use --preview for analysis only)")
+        raise SystemExit(1)
+
+    # Create output directory
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    try:
+        if not use_json:
+            info_output(f"Partitioning {input_file.name} with {strategy} strategy...")
+
+        partition_files = partition_geoparquet(
+            input_path=input_file,
+            output_dir=output_dir,
+            strategy=strategy,
+            target_rows=target_rows,
+            verbose=verbose,
+        )
+
+        if use_json:
+            result = {
+                "input": str(input_file),
+                "output_dir": str(output_dir),
+                "partitions": len(partition_files),
+                "files": [str(p) for p in partition_files],
+            }
+            output_json_envelope(success_envelope("partition", result))
+        else:
+            success(f"Created {len(partition_files)} partitions in {output_dir}")
+            if verbose:
+                for pf in partition_files:
+                    detail(f"  {pf.parent.name}/{pf.name}")
+
+    except Exception as e:
+        if use_json:
+            envelope = error_envelope(
+                "partition",
+                [ErrorDetail(type="PartitionError", message=str(e))],
+            )
+            output_json_envelope(envelope)
+        else:
+            error(f"Partitioning failed: {e}")
+        raise SystemExit(1) from None
+
+
 def _require_iceberg_backend(
     catalog_path: Path, use_json: bool, command_name: str
 ) -> VersioningBackend:
