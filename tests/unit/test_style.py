@@ -62,161 +62,6 @@ class TestVectorStyleConfig:
 # =============================================================================
 
 
-class TestBuildPmtilesStyle:
-    """Tests for build_pmtiles_style function."""
-
-    @pytest.mark.unit
-    def test_polygon_style(self) -> None:
-        """Builds fill layer for polygon geometry."""
-        from portolan_cli.style import VectorStyleConfig, build_pmtiles_style
-
-        config = VectorStyleConfig()
-        style = build_pmtiles_style("Polygon", "layer_name", config)
-
-        assert style["version"] == 8
-        assert len(style["layers"]) == 1
-
-        layer = style["layers"][0]
-        assert layer["type"] == "fill"
-        assert layer["source-layer"] == "layer_name"
-        assert layer["paint"]["fill-color"] == "#3388ff"
-        assert layer["paint"]["fill-opacity"] == 0.6
-        assert layer["paint"]["fill-outline-color"] == "#2266cc"
-
-    @pytest.mark.unit
-    def test_multipolygon_style(self) -> None:
-        """MultiPolygon uses same style as Polygon."""
-        from portolan_cli.style import VectorStyleConfig, build_pmtiles_style
-
-        config = VectorStyleConfig()
-        style = build_pmtiles_style("MultiPolygon", "data", config)
-
-        layer = style["layers"][0]
-        assert layer["type"] == "fill"
-
-    @pytest.mark.unit
-    def test_linestring_style(self) -> None:
-        """Builds line layer for line geometry."""
-        from portolan_cli.style import VectorStyleConfig, build_pmtiles_style
-
-        config = VectorStyleConfig()
-        style = build_pmtiles_style("LineString", "roads", config)
-
-        layer = style["layers"][0]
-        assert layer["type"] == "line"
-        assert layer["paint"]["line-color"] == "#3388ff"
-        assert layer["paint"]["line-width"] == 2
-        assert layer["paint"]["line-opacity"] == 0.8
-
-    @pytest.mark.unit
-    def test_multilinestring_style(self) -> None:
-        """MultiLineString uses same style as LineString."""
-        from portolan_cli.style import VectorStyleConfig, build_pmtiles_style
-
-        config = VectorStyleConfig()
-        style = build_pmtiles_style("MultiLineString", "rivers", config)
-
-        layer = style["layers"][0]
-        assert layer["type"] == "line"
-
-    @pytest.mark.unit
-    def test_point_style(self) -> None:
-        """Builds circle layer for point geometry."""
-        from portolan_cli.style import VectorStyleConfig, build_pmtiles_style
-
-        config = VectorStyleConfig()
-        style = build_pmtiles_style("Point", "cities", config)
-
-        layer = style["layers"][0]
-        assert layer["type"] == "circle"
-        assert layer["paint"]["circle-color"] == "#3388ff"
-        assert layer["paint"]["circle-radius"] == 4
-        assert layer["paint"]["circle-opacity"] == 0.8
-
-    @pytest.mark.unit
-    def test_multipoint_style(self) -> None:
-        """MultiPoint uses same style as Point."""
-        from portolan_cli.style import VectorStyleConfig, build_pmtiles_style
-
-        config = VectorStyleConfig()
-        style = build_pmtiles_style("MultiPoint", "events", config)
-
-        layer = style["layers"][0]
-        assert layer["type"] == "circle"
-
-    @pytest.mark.unit
-    def test_geometry_collection_fallback(self) -> None:
-        """GeometryCollection falls back to polygon style."""
-        from portolan_cli.style import VectorStyleConfig, build_pmtiles_style
-
-        config = VectorStyleConfig()
-        style = build_pmtiles_style("GeometryCollection", "mixed", config)
-
-        layer = style["layers"][0]
-        assert layer["type"] == "fill"
-
-    @pytest.mark.unit
-    def test_unknown_geometry_fallback(self) -> None:
-        """Unknown geometry type falls back to polygon style."""
-        from portolan_cli.style import VectorStyleConfig, build_pmtiles_style
-
-        config = VectorStyleConfig()
-        style = build_pmtiles_style("Unknown", "data", config)
-
-        layer = style["layers"][0]
-        assert layer["type"] == "fill"
-
-    @pytest.mark.unit
-    def test_custom_config_applied(self) -> None:
-        """Custom config values are applied to style."""
-        from portolan_cli.style import VectorStyleConfig, build_pmtiles_style
-
-        config = VectorStyleConfig(
-            polygon_fill_color="#ff0000",
-            polygon_fill_opacity=0.9,
-            polygon_outline_color="#000000",
-        )
-        style = build_pmtiles_style("Polygon", "parcels", config)
-
-        layer = style["layers"][0]
-        assert layer["paint"]["fill-color"] == "#ff0000"
-        assert layer["paint"]["fill-opacity"] == 0.9
-        assert layer["paint"]["fill-outline-color"] == "#000000"
-
-    @pytest.mark.unit
-    def test_layer_id_generated(self) -> None:
-        """Layer ID is auto-generated from source-layer."""
-        from portolan_cli.style import VectorStyleConfig, build_pmtiles_style
-
-        config = VectorStyleConfig()
-        style = build_pmtiles_style("Polygon", "parcels", config)
-
-        layer = style["layers"][0]
-        assert layer["id"] == "parcels-fill"
-
-    @pytest.mark.unit
-    def test_line_layer_id(self) -> None:
-        """Line layer ID uses -line suffix."""
-        from portolan_cli.style import VectorStyleConfig, build_pmtiles_style
-
-        config = VectorStyleConfig()
-        style = build_pmtiles_style("LineString", "roads", config)
-
-        layer = style["layers"][0]
-        assert layer["id"] == "roads-line"
-
-    @pytest.mark.unit
-    def test_circle_layer_id(self) -> None:
-        """Circle layer ID uses -circle suffix."""
-        from portolan_cli.style import VectorStyleConfig, build_pmtiles_style
-
-        config = VectorStyleConfig()
-        style = build_pmtiles_style("Point", "points", config)
-
-        layer = style["layers"][0]
-        assert layer["id"] == "points-circle"
-
-
 # =============================================================================
 # Phase 3: Raster Style Tests
 # =============================================================================
@@ -339,37 +184,47 @@ styles:
 
 
 class TestStyleInAssetProperties:
-    """Tests for adding style to STAC asset properties."""
+    """Tests for style structure validation."""
 
     @pytest.mark.unit
-    def test_pmtiles_style_in_properties(self) -> None:
-        """PMTiles style is serialized to pmtiles:style property."""
-        from portolan_cli.style import VectorStyleConfig, build_pmtiles_style
+    def test_full_style_structure(self) -> None:
+        """Full style has all required Mapbox GL fields."""
+        from portolan_cli.style import VectorStyleConfig, build_full_style
 
         config = VectorStyleConfig()
-        style = build_pmtiles_style("Polygon", "parcels", config)
+        style = build_full_style(
+            name="Test",
+            geometry_type="Polygon",
+            source_layer="parcels",
+            pmtiles_relative_path="../data.pmtiles",
+            config=config,
+        )
 
-        # Style should be a complete Mapbox GL style spec subset
         assert "version" in style
+        assert "name" in style
+        assert "sources" in style
         assert "layers" in style
         assert isinstance(style["layers"], list)
         assert len(style["layers"]) > 0
+        assert style["layers"][0]["source"] == "data"
 
     @pytest.mark.unit
     def test_style_is_json_serializable(self) -> None:
-        """Style dict is JSON-serializable for STAC asset storage."""
+        """Style dict is JSON-serializable."""
         import json
 
-        from portolan_cli.style import VectorStyleConfig, build_pmtiles_style
+        from portolan_cli.style import VectorStyleConfig, build_full_style
 
         config = VectorStyleConfig()
-        style = build_pmtiles_style("Polygon", "layer", config)
+        style = build_full_style(
+            name="Test",
+            geometry_type="Polygon",
+            source_layer="layer",
+            pmtiles_relative_path="../data.pmtiles",
+            config=config,
+        )
 
-        # Should not raise
         serialized = json.dumps(style)
-        assert isinstance(serialized, str)
-
-        # Should round-trip
         deserialized = json.loads(serialized)
         assert deserialized == style
 
@@ -590,6 +445,9 @@ class TestStyleFixtures:
         assert style["version"] == 8
         assert len(style["layers"]) == 1
         assert style["layers"][0]["type"] == "circle"
+        assert "sources" in style
+        assert "data" in style["sources"]
+        assert style["layers"][0]["source"] == "data"
 
     @pytest.mark.unit
     def test_valid_polygon_style_loads(self, valid_style_dir: Path) -> None:
@@ -603,6 +461,9 @@ class TestStyleFixtures:
         assert style["version"] == 8
         assert len(style["layers"]) == 1
         assert style["layers"][0]["type"] == "fill"
+        assert "sources" in style
+        assert "data" in style["sources"]
+        assert style["layers"][0]["source"] == "data"
 
     @pytest.mark.unit
     def test_valid_line_style_loads(self, valid_style_dir: Path) -> None:
@@ -616,6 +477,9 @@ class TestStyleFixtures:
         assert style["version"] == 8
         assert len(style["layers"]) == 1
         assert style["layers"][0]["type"] == "line"
+        assert "sources" in style
+        assert "data" in style["sources"]
+        assert style["layers"][0]["source"] == "data"
 
     @pytest.mark.unit
     def test_categorical_style_has_match_expression(self, valid_style_dir: Path) -> None:
@@ -631,6 +495,9 @@ class TestStyleFixtures:
         fill_color = paint["fill-color"]
         assert isinstance(fill_color, list)
         assert fill_color[0] == "match"
+        assert "sources" in style
+        assert "data" in style["sources"]
+        assert style["layers"][0]["source"] == "data"
 
     @pytest.mark.unit
     def test_graduated_style_has_interpolate_expression(self, valid_style_dir: Path) -> None:
@@ -646,6 +513,9 @@ class TestStyleFixtures:
         fill_color = paint["fill-color"]
         assert isinstance(fill_color, list)
         assert fill_color[0] == "interpolate"
+        assert "sources" in style
+        assert "data" in style["sources"]
+        assert style["layers"][0]["source"] == "data"
 
     @pytest.mark.unit
     def test_bad_syntax_fixture_fails_parse(self, invalid_style_dir: Path) -> None:

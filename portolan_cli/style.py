@@ -123,23 +123,28 @@ class RasterStyleConfig:
 # =============================================================================
 
 
-def build_pmtiles_style(
+def build_full_style(
+    name: str,
     geometry_type: str,
     source_layer: str,
+    pmtiles_relative_path: str,
     config: VectorStyleConfig,
 ) -> dict[str, Any]:
-    """Build Mapbox GL style spec for PMTiles based on geometry type.
+    """Build complete Mapbox GL v8 style with sources and layers.
 
-    Generates a minimal Mapbox GL style spec (version 8) with a single layer
-    appropriate for the geometry type.
+    Generates a full Mapbox GL style spec (version 8) including sources
+    section with PMTiles URL and a single layer appropriate for the
+    geometry type.
 
     Args:
+        name: Style name (e.g., "Default").
         geometry_type: OGC geometry type (Point, LineString, Polygon, etc.).
         source_layer: Name of the source layer in PMTiles.
+        pmtiles_relative_path: Relative path to PMTiles file (e.g., "../data.pmtiles").
         config: Style configuration.
 
     Returns:
-        Mapbox GL style spec dict with version and layers.
+        Complete Mapbox GL style spec dict with version, name, sources, and layers.
     """
     # Normalize geometry type to layer type
     geom_lower = geometry_type.lower()
@@ -173,45 +178,10 @@ def build_pmtiles_style(
     layer = {
         "id": f"{source_layer}-{suffix}",
         "type": layer_type,
+        "source": "data",
         "source-layer": source_layer,
         "paint": paint,
     }
-
-    return {
-        "version": 8,
-        "layers": [layer],
-    }
-
-
-def build_full_style(
-    name: str,
-    geometry_type: str,
-    source_layer: str,
-    pmtiles_relative_path: str,
-    config: VectorStyleConfig,
-) -> dict[str, Any]:
-    """Build complete Mapbox GL v8 style with sources and layers.
-
-    Generates a full Mapbox GL style spec (version 8) including sources
-    section with PMTiles URL and a single layer appropriate for the
-    geometry type.
-
-    Args:
-        name: Style name (e.g., "Default").
-        geometry_type: OGC geometry type (Point, LineString, Polygon, etc.).
-        source_layer: Name of the source layer in PMTiles.
-        pmtiles_relative_path: Relative path to PMTiles file (e.g., "../data.pmtiles").
-        config: Style configuration.
-
-    Returns:
-        Complete Mapbox GL style spec dict with version, name, sources, and layers.
-    """
-    # Reuse build_pmtiles_style logic for layer generation
-    partial_style = build_pmtiles_style(geometry_type, source_layer, config)
-
-    # Extract layer and add source reference
-    layer = partial_style["layers"][0]
-    layer["source"] = "data"
 
     return {
         "version": 8,
