@@ -27,7 +27,6 @@ class PMTilesMetadata:
         tile_type: Tile type ("mvt", "png", "jpeg", "webp", "avif").
         center: Optional center point as (lon, lat, zoom).
         layer_name: Name of the primary layer in the PMTiles (for styling).
-        style: Optional Mapbox GL style spec (Issue #13).
     """
 
     bbox: tuple[float, float, float, float] | None
@@ -36,7 +35,6 @@ class PMTilesMetadata:
     tile_type: str
     center: tuple[float, float, int] | None
     layer_name: str | None = None
-    style: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to JSON-serializable dict."""
@@ -49,8 +47,6 @@ class PMTilesMetadata:
         }
         if self.layer_name:
             result["layer_name"] = self.layer_name
-        if self.style:
-            result["style"] = self.style
         return result
 
     def to_stac_properties(self) -> dict[str, Any]:
@@ -71,9 +67,6 @@ class PMTilesMetadata:
 
         if self.layer_name:
             props["pmtiles:layers"] = [self.layer_name]
-
-        if self.style:
-            props["pmtiles:style"] = self.style
 
         return props
 

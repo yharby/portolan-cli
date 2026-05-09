@@ -266,27 +266,36 @@ def generate_pmtiles(
         raise PMTilesGenerationError(str(parquet_path), e) from e
 
 
-def _build_style_for_geoparquet(
+def _write_default_style_for_geoparquet(
     parquet_path: Path,
     layer_name: str,
+    collection_path: Path,
+    pmtiles_relative_path: str,
     catalog_path: Path | None = None,
-) -> dict[str, Any] | None:
-    """Build Mapbox GL style for PMTiles based on source GeoParquet geometry.
+) -> Path | None:
+    """Write a default style file for a PMTiles asset.
 
     Args:
-        parquet_path: Path to source GeoParquet file.
-        layer_name: Layer name for the style (typically filename stem).
+        parquet_path: Path to source GeoParquet (for geometry type detection).
+        layer_name: Layer name in the PMTiles.
+        collection_path: Path to the collection directory.
+        pmtiles_relative_path: PMTiles path relative to collection (e.g., "data.pmtiles").
         catalog_path: Optional catalog path for loading style config.
 
     Returns:
-        Mapbox GL style dict, or None if geometry type cannot be determined.
+        Path to the written style file, or None if skipped.
     """
+    # Check existence before expensive metadata extraction
+    default_path = collection_path / "styles" / "default.json"
+    if default_path.exists():
+        return None
+
     try:
         from portolan_cli.metadata.geoparquet import extract_geoparquet_metadata
         from portolan_cli.style import (
             VectorStyleConfig,
-            build_pmtiles_style,
             get_vector_style_config,
+            write_default_style,
         )
     except ImportError:
         logger.debug("Style dependencies not available")
@@ -299,15 +308,17 @@ def _build_style_for_geoparquet(
             logger.debug("No geometry type found in %s", parquet_path)
             return None
 
-        # Load style config from catalog if available
-        if catalog_path:
-            config = get_vector_style_config(catalog_path)
-        else:
-            config = VectorStyleConfig()
+        config = get_vector_style_config(catalog_path) if catalog_path else VectorStyleConfig()
 
-        return build_pmtiles_style(geometry_type, layer_name, config)
+        return write_default_style(
+            collection_path=collection_path,
+            geometry_type=geometry_type,
+            source_layer=layer_name,
+            pmtiles_relative_path=pmtiles_relative_path,
+            config=config,
+        )
     except Exception as e:
-        logger.debug("Failed to build style for %s: %s", parquet_path, e)
+        logger.debug("Failed to write default style for %s: %s", parquet_path, e)
         return None
 
 
@@ -316,7 +327,6 @@ def add_pmtiles_asset_to_collection(
     parquet_key: str,
     pmtiles_href: str,
     *,
-    style: dict[str, Any] | None = None,
     extra_properties: dict[str, Any] | None = None,
 ) -> None:
     """Add PMTiles asset to collection.json.
@@ -328,7 +338,6 @@ def add_pmtiles_asset_to_collection(
         collection_path: Path to collection directory.
         parquet_key: Asset key of the source GeoParquet.
         pmtiles_href: Relative href to PMTiles file (e.g., "./data.pmtiles").
-        style: Optional Mapbox GL style spec to add as pmtiles:style (Issue #13).
         extra_properties: Additional properties to add to the asset.
 
     Raises:
@@ -348,15 +357,10 @@ def add_pmtiles_asset_to_collection(
     source_asset = assets.get(parquet_key, {})
     source_title = source_asset.get("title", parquet_key)
 
-    # Check if already exists - update style if changed, otherwise skip
+    # Check if already exists - update extra properties if changed, otherwise skip
     if pmtiles_key in assets:
         existing = assets[pmtiles_key]
         needs_update = False
-
-        # Update style if provided and different
-        if style and existing.get("pmtiles:style") != style:
-            existing["pmtiles:style"] = style
-            needs_update = True
 
         # Update extra properties if provided
         if extra_properties:
@@ -375,10 +379,6 @@ def add_pmtiles_asset_to_collection(
         "title": f"{source_title} (vector tiles)",
         "roles": ["visual"],
     }
-
-    # Add style if provided (Issue #13)
-    if style:
-        asset_dict["pmtiles:style"] = style
 
     # Add any extra properties
     if extra_properties:
@@ -568,13 +568,26 @@ def generate_pmtiles_for_collection(
         except ValueError:
             pmtiles_href = f"./{pmtiles_path.name}"
 
-        # Determine layer name and build style once (Issue #13)
+        # Determine layer name (Issue #13)
         layer_name = layer if layer else parquet_path.stem
-        style = _build_style_for_geoparquet(parquet_path, layer_name, catalog_root)
+
+        # Compute collection-relative PMTiles path for style source URLs
+        try:
+            pmtiles_col_rel = pmtiles_path.relative_to(collection_path).as_posix()
+        except ValueError:
+            pmtiles_col_rel = pmtiles_path.name
 
         if not _should_generate(parquet_path, pmtiles_path, force):
             # Ensure asset is registered/updated in collection.json even when skipping
-            add_pmtiles_asset_to_collection(collection_path, asset_key, pmtiles_href, style=style)
+            add_pmtiles_asset_to_collection(collection_path, asset_key, pmtiles_href)
+            # Ensure default style exists even when PMTiles generation is skipped
+            _write_default_style_for_geoparquet(
+                parquet_path=parquet_path,
+                layer_name=layer_name,
+                collection_path=collection_path,
+                pmtiles_relative_path=pmtiles_col_rel,
+                catalog_path=catalog_root,
+            )
             result.skipped.append(pmtiles_path)
             continue
 
@@ -601,14 +614,23 @@ def generate_pmtiles_for_collection(
                 src_crs=src_crs,
             )
 
-            # Register asset in collection.json with style (Issue #13)
-            add_pmtiles_asset_to_collection(collection_path, asset_key, pmtiles_href, style=style)
+            # Register asset in collection.json (Issue #13)
+            add_pmtiles_asset_to_collection(collection_path, asset_key, pmtiles_href)
 
             # Track in versions.json
             track_pmtiles_in_versions(collection_path, pmtiles_path, catalog_root)
 
             result.generated.append(pmtiles_path)
             generation_succeeded = True
+
+            # Generate default style file (ADR-0045)
+            _write_default_style_for_geoparquet(
+                parquet_path=parquet_path,
+                layer_name=layer_name,
+                collection_path=collection_path,
+                pmtiles_relative_path=pmtiles_col_rel,
+                catalog_path=catalog_root,
+            )
 
         except PMTilesGenerationError as e:
             result.failed.append((parquet_path, str(e)))
@@ -639,5 +661,11 @@ def generate_pmtiles_for_collection(
                         add_thumbnail_asset_to_collection(collection_path, pmtiles_key, thumb_path)
             except Exception as e:
                 logger.warning("Thumbnail generation failed for %s: %s", pmtiles_path.name, e)
+
+    # Discover and register style assets (ADR-0045)
+    from portolan_cli.style import discover_styles, register_style_assets
+
+    styles = discover_styles(collection_path)
+    register_style_assets(collection_path, styles)
 
     return result

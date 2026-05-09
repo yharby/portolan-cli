@@ -5,14 +5,21 @@ Generates Mapbox GL style specs for PMTiles and render extension properties for 
 Public API:
 - VectorStyleConfig: Configuration for vector styling
 - RasterStyleConfig: Configuration for raster styling
-- build_pmtiles_style: Generate Mapbox GL style for PMTiles
+- StyleInfo: Discovered style file metadata
+- build_full_style: Generate complete Mapbox GL style with sources
+- write_style_file: Write style dict to JSON file
+- write_default_style: Convenience function to write default.json
 - build_raster_style: Generate render extension properties for COG
 - get_vector_style_config: Load vector style config from catalog
 - get_raster_style_config: Load raster style config from catalog
+- discover_styles: Discover style JSON files in styles/ directory
+- build_styles_manifest: Build portolan:styles manifest array
+- register_style_assets: Register styles as STAC assets in collection.json
 """
 
 from __future__ import annotations
 
+import json
 import logging
 from dataclasses import dataclass
 from pathlib import Path
@@ -62,6 +69,25 @@ def _parse_config_float(value: Any, key: str, default: float) -> float:
 # =============================================================================
 # Configuration Dataclasses
 # =============================================================================
+
+
+@dataclass(frozen=True)
+class StyleInfo:
+    """Metadata for a discovered style file.
+
+    Attributes:
+        key: STAC asset key (e.g., "styles/default").
+        href: Relative href for STAC asset (e.g., "./styles/default.json").
+        title: Human-readable title from style's "name" field or filename.
+        description: Description from style file (empty string if absent).
+        path: Absolute path to the style file on disk.
+    """
+
+    key: str
+    href: str
+    title: str
+    description: str
+    path: Path
 
 
 @dataclass(frozen=True)
@@ -117,23 +143,28 @@ class RasterStyleConfig:
 # =============================================================================
 
 
-def build_pmtiles_style(
+def build_full_style(
+    name: str,
     geometry_type: str,
     source_layer: str,
+    pmtiles_relative_path: str,
     config: VectorStyleConfig,
 ) -> dict[str, Any]:
-    """Build Mapbox GL style spec for PMTiles based on geometry type.
+    """Build complete Mapbox GL v8 style with sources and layers.
 
-    Generates a minimal Mapbox GL style spec (version 8) with a single layer
-    appropriate for the geometry type.
+    Generates a full Mapbox GL style spec (version 8) including sources
+    section with PMTiles URL and a single layer appropriate for the
+    geometry type.
 
     Args:
+        name: Style name (e.g., "Default").
         geometry_type: OGC geometry type (Point, LineString, Polygon, etc.).
         source_layer: Name of the source layer in PMTiles.
+        pmtiles_relative_path: Relative path to PMTiles file (e.g., "../data.pmtiles").
         config: Style configuration.
 
     Returns:
-        Mapbox GL style spec dict with version and layers.
+        Complete Mapbox GL style spec dict with version, name, sources, and layers.
     """
     # Normalize geometry type to layer type
     geom_lower = geometry_type.lower()
@@ -167,14 +198,97 @@ def build_pmtiles_style(
     layer = {
         "id": f"{source_layer}-{suffix}",
         "type": layer_type,
+        "source": "data",
         "source-layer": source_layer,
         "paint": paint,
     }
 
     return {
         "version": 8,
+        "name": name,
+        "sources": {
+            "data": {
+                "type": "vector",
+                "url": pmtiles_relative_path,
+            }
+        },
         "layers": [layer],
     }
+
+
+def write_style_file(
+    style_dir: Path,
+    name: str,
+    style_dict: dict[str, Any],
+) -> Path:
+    """Write a style dict to a JSON file.
+
+    Creates the directory if needed, writes {style_dir}/{name}.json with
+    indented JSON formatting.
+
+    Args:
+        style_dir: Directory to write the style file into.
+        name: Style filename (without .json extension). Must not contain
+            path separators or parent directory references.
+        style_dict: Style dict to serialize.
+
+    Returns:
+        Path to the written file.
+
+    Raises:
+        ValueError: If name contains path traversal characters.
+    """
+    if "/" in name or "\\" in name or ".." in name:
+        msg = f"Style name must not contain path separators or '..': {name!r}"
+        raise ValueError(msg)
+    style_dir.mkdir(parents=True, exist_ok=True)
+    style_path = style_dir / f"{name}.json"
+    style_path.write_text(json.dumps(style_dict, indent=2))
+    return style_path
+
+
+def write_default_style(
+    collection_path: Path,
+    geometry_type: str,
+    source_layer: str,
+    pmtiles_relative_path: str,
+    config: VectorStyleConfig | None = None,
+) -> Path | None:
+    """Write default style to {collection_path}/styles/default.json.
+
+    Convenience function that creates a default.json style file. Does NOT
+    overwrite if file already exists (returns None).
+
+    Args:
+        collection_path: Path to the collection directory.
+        geometry_type: OGC geometry type (Point, LineString, Polygon, etc.).
+        source_layer: Name of the source layer in PMTiles.
+        pmtiles_relative_path: PMTiles path relative to collection (e.g., "data.pmtiles"
+            or "sub/data.pmtiles"). Will be prefixed with "../" for styles/ directory.
+        config: Optional style configuration (uses defaults if None).
+
+    Returns:
+        Path to written file, or None if default.json already exists.
+    """
+    styles_dir = collection_path / "styles"
+    default_path = styles_dir / "default.json"
+
+    # Don't overwrite existing file
+    if default_path.exists():
+        return None
+
+    if config is None:
+        config = VectorStyleConfig()
+
+    style_dict = build_full_style(
+        name="Default",
+        geometry_type=geometry_type,
+        source_layer=source_layer,
+        pmtiles_relative_path=f"../{pmtiles_relative_path}",
+        config=config,
+    )
+
+    return write_style_file(styles_dir, "default", style_dict)
 
 
 def build_raster_style(config: RasterStyleConfig) -> dict[str, Any]:
@@ -245,6 +359,126 @@ def enrich_cog_assets(
     for asset in assets.values():
         if getattr(asset, "media_type", None) in _COG_MEDIA_TYPES:
             enrich_cog_asset_with_style(asset, catalog_path)
+
+
+# =============================================================================
+# Style Discovery
+# =============================================================================
+
+
+def discover_styles(collection_path: Path) -> list[StyleInfo]:
+    """Discover style JSON files in {collection_path}/styles/ directory.
+
+    Args:
+        collection_path: Path to the collection directory.
+
+    Returns:
+        List of StyleInfo objects. Empty list if no styles/ directory exists.
+    """
+    styles_dir = collection_path / "styles"
+
+    if not styles_dir.exists():
+        return []
+
+    styles: list[StyleInfo] = []
+
+    for path in sorted(styles_dir.glob("*.json")):
+        try:
+            style_data = json.loads(path.read_text())
+        except (json.JSONDecodeError, OSError) as e:
+            logger.warning("Skipping style file %s: %s", path, e)
+            continue
+
+        # Skip if parsed result is not a dict
+        if not isinstance(style_data, dict):
+            continue
+
+        name = path.stem
+        title = style_data.get("name", name)
+        description = style_data.get("description", "")
+
+        styles.append(
+            StyleInfo(
+                key=f"styles/{name}",
+                href=f"./styles/{path.name}",
+                title=title,
+                description=description,
+                path=path,
+            )
+        )
+
+    return styles
+
+
+def build_styles_manifest(styles: list[StyleInfo]) -> list[str]:
+    """Build the portolan:styles manifest array.
+
+    Returns ordered list of asset keys with styles/default first if present,
+    then remaining styles sorted alphabetically.
+
+    Args:
+        styles: List of StyleInfo objects (from discover_styles).
+
+    Returns:
+        List of style asset keys.
+    """
+    keys = [s.key for s in styles]
+
+    if "styles/default" in keys:
+        # Put default first, sort the rest
+        remaining = [k for k in keys if k != "styles/default"]
+        return ["styles/default"] + sorted(remaining)
+
+    # No default, just sort all
+    return sorted(keys)
+
+
+def register_style_assets(
+    collection_path: Path,
+    styles: list[StyleInfo],
+) -> None:
+    """Register discovered styles as STAC assets and set portolan:styles manifest.
+
+    Updates collection.json to add/update style assets and remove stale ones.
+
+    Args:
+        collection_path: Path to the collection directory.
+        styles: List of StyleInfo objects from discover_styles().
+    """
+    collection_json_path = collection_path / "collection.json"
+    if not collection_json_path.exists():
+        return
+
+    data = json.loads(collection_json_path.read_text())
+    assets = data.get("assets", {})
+
+    # Remove stale style assets (assets with "styles/" prefix that no longer have files)
+    current_keys = {s.key for s in styles}
+    stale_keys = [k for k in assets if k.startswith("styles/") and k not in current_keys]
+    for key in stale_keys:
+        del assets[key]
+
+    # Add/update style assets
+    for style_info in styles:
+        asset_dict: dict[str, Any] = {
+            "href": style_info.href,
+            "type": "application/json",
+            "title": style_info.title,
+            "roles": ["style"],
+        }
+        if style_info.description:
+            asset_dict["description"] = style_info.description
+        assets[style_info.key] = asset_dict
+
+    data["assets"] = assets
+
+    # Set or remove portolan:styles manifest
+    if styles:
+        data["portolan:styles"] = build_styles_manifest(styles)
+    else:
+        data.pop("portolan:styles", None)
+
+    collection_json_path.write_text(json.dumps(data, indent=2))
 
 
 # =============================================================================

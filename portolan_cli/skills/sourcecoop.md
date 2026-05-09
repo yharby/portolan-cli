@@ -163,7 +163,7 @@ portolan metadata init --recursive
 
 **Recommended fields** (prompt user for these):
 - `keywords` — List of tags for discoverability
-- `citation` — How to cite this dataset
+- `citation` — How to cite this collection
 - `temporal_extent` — Time range the data covers
 - `providers` — Organizations that created/host the data
 
@@ -372,6 +372,80 @@ portolan readme --recursive
 # 7. Push to Source Co-op
 portolan push --workers 8 --verbose
 ```
+
+---
+
+## Styles
+
+Portolan supports multiple named visualization styles per collection. Each style is a complete Mapbox GL v8 JSON file stored in `{collection}/styles/`.
+
+### Creating Styles
+
+Style files are complete Mapbox GL v8 specs with relative PMTiles source paths:
+
+```json
+{
+  "version": 8,
+  "name": "Buildings by Construction Year",
+  "sources": {
+    "data": {
+      "type": "vector",
+      "url": "../data.pmtiles"
+    }
+  },
+  "layers": [
+    {
+      "id": "buildings-by-age",
+      "type": "fill",
+      "source": "data",
+      "source-layer": "layer_name",
+      "paint": {
+        "fill-color": ["interpolate", ["linear"], ["get", "bouwjaar"],
+          1400, "#1a0a00", 1900, "#8B4513", 1960, "#DAA520", 2020, "#FFFF00"
+        ],
+        "fill-opacity": 0.7
+      }
+    }
+  ]
+}
+```
+
+A default style is auto-generated during PMTiles creation. Drop additional style files into `styles/` and they'll be discovered automatically.
+
+### Style Best Practices
+
+1. **Create multiple styles for rich collections.** If a collection has interesting categorical or numeric attributes, create data-driven styles for each. Example: buildings by construction year, by usage type, by height. Don't stop at a single default.
+
+2. **Vary default styles across a catalog.** Each collection should have a visually distinct default color/palette. Use subject matter to inform color choices — water features in blues, vegetation in greens, built environment in warm tones, infrastructure in grays.
+
+3. **Use data-driven styling.** Leverage Mapbox GL expressions (`interpolate`, `match`, `case`, `step`) to reveal patterns in data. For categorical data use `match`; for continuous data use `interpolate` or `step`.
+
+4. **Include a description field on the STAC asset** explaining what the colors/sizes represent. This appears in style pickers and tooltips.
+
+5. **Consider label layers.** For collections with names (monuments, administrative areas, roads), add a label style layer or a dedicated "with labels" style variant.
+
+6. **Look at the collection's table:columns** to understand what attributes are available for data-driven styling. Interesting fields for visualization include: categories/enums, dates/years, numeric measurements, status fields.
+
+### STAC Registration
+
+Styles are registered as collection-level assets with the `portolan:styles` manifest:
+
+```json
+{
+  "portolan:styles": ["styles/default", "styles/by-age", "styles/by-use"],
+  "assets": {
+    "styles/default": {
+      "href": "./styles/default.json",
+      "type": "application/json",
+      "title": "Default",
+      "description": "Blue building footprints.",
+      "roles": ["style"]
+    }
+  }
+}
+```
+
+First entry in `portolan:styles` is the default. `portolan scan` discovers styles and registers them automatically.
 
 ---
 
