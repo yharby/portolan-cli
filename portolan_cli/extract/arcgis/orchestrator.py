@@ -250,6 +250,8 @@ class ExtractionOptions:
         sort_hilbert: Whether to apply Hilbert spatial sorting
         raw: If True, skip auto-init (only create extraction files, no STAC catalog)
         no_styles: If True, skip style extraction from ESRI drawingInfo
+        token: Optional ArcGIS token for authenticated endpoints
+        recurse: Whether to recurse into sub-folders during discovery (default True)
     """
 
     workers: int = 3
@@ -260,6 +262,8 @@ class ExtractionOptions:
     dry_run: bool = False
     sort_hilbert: bool = True
     no_styles: bool = False
+    token: str | None = None
+    recurse: bool = True
 
 
 @dataclass
@@ -558,8 +562,8 @@ def extract_arcgis_catalog(
     # Parse URL
     parsed = parse_arcgis_url(url)
 
-    # Handle services root URLs differently
-    if parsed.url_type == ArcGISURLType.SERVICES_ROOT:
+    # Handle services root and folder URLs differently
+    if parsed.url_type in (ArcGISURLType.SERVICES_ROOT, ArcGISURLType.SERVICES_FOLDER):
         return _extract_services_root(
             url=url,
             parsed=parsed,
@@ -849,16 +853,27 @@ def _discover_and_filter_services(
     service_filter: list[str] | None,
     service_exclude: list[str] | None,
     timeout: float,
-) -> list[ServiceInfo]:
-    """Discover services and apply filters."""
+    *,
+    token: str | None = None,
+    folder: str | None = None,
+) -> tuple[list[ServiceInfo], FolderCoverage]:
+    """Discover services recursively, scope to a folder, and apply filters.
+
+    Returns (services, coverage). When folder is set (SERVICES_FOLDER URL), only
+    services under that folder prefix are kept.
+    """
     from portolan_cli.extract.arcgis.filters import filter_services
 
-    services, _folders = discover_services(
+    services, traversal = discover_services_recursive(
         url,
         service_types=["FeatureServer", "MapServer"],
-        return_folders=True,
+        token=token,
         timeout=timeout,
     )
+
+    if folder:
+        prefix = f"{folder.rstrip('/')}/"
+        services = [s for s in services if s.name.startswith(prefix)]
 
     if service_filter or service_exclude:
         service_names = [s.name for s in services]
@@ -870,7 +885,7 @@ def _discover_and_filter_services(
         )
         services = [s for s in services if s.name in filtered_names]
 
-    return services
+    return services, _coverage_from_traversal(traversal)
 
 
 def _collect_layers_from_services(
@@ -986,7 +1001,14 @@ def _extract_services_root(
         options = ExtractionOptions()
 
     # Discover and filter services
-    services = _discover_and_filter_services(url, service_filter, service_exclude, options.timeout)
+    services, coverage = _discover_and_filter_services(
+        url,
+        service_filter,
+        service_exclude,
+        options.timeout,
+        token=options.token,
+        folder=parsed.folder,
+    )
 
     # Collect layers from all services
     all_layers, service_for_layer, layer_count_per_service, _discovery_errors = (
@@ -1017,11 +1039,13 @@ def _extract_services_root(
         combined_discovery = ServiceDiscoveryResult(
             layers=[layer for _, layer in filtered_layers],
         )
-        return _build_report(
+        dry_report = _build_report(
             url=url,
             discovery_result=combined_discovery,
             layer_results=dry_run_results,
         )
+        dry_report.folder_coverage = coverage
+        return dry_report
 
     # Create output directory structure
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -1142,6 +1166,7 @@ def _extract_services_root(
         discovery_result=combined_discovery,
         layer_results=layer_results,
     )
+    report.folder_coverage = coverage
     report_path = output_dir / ".portolan" / "extraction-report.json"
     save_report(report, report_path)
 

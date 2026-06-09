@@ -12,6 +12,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from portolan_cli.extract.arcgis.discovery import (
+    FolderTraversal,
     LayerInfo,
     ServiceDiscoveryResult,
     ServiceInfo,
@@ -20,6 +21,7 @@ from portolan_cli.extract.arcgis.orchestrator import (
     ExtractionOptions,
     ExtractionProgress,
     ServicesRootDiscoveryResult,
+    _discover_and_filter_services,
     _service_output_dir,
     _slugify,
     extract_arcgis_catalog,
@@ -248,15 +250,17 @@ class TestExtractArcgisCatalog:
             ],
         )
 
+        mock_traversal = FolderTraversal(visited=[], skipped=[], service_count=2)
+
         with (
             patch(
-                "portolan_cli.extract.arcgis.orchestrator.discover_services"
+                "portolan_cli.extract.arcgis.orchestrator.discover_services_recursive"
             ) as mock_discover_services,
             patch(
                 "portolan_cli.extract.arcgis.orchestrator.discover_layers"
             ) as mock_discover_layers,
         ):
-            mock_discover_services.return_value = (mock_services, [])
+            mock_discover_services.return_value = (mock_services, mock_traversal)
             # Return different layers for each service
             mock_discover_layers.side_effect = [mock_census_layers, mock_transport_layers]
 
@@ -584,16 +588,18 @@ class TestServicesRootExtraction:
             ],
         )
 
+        mock_traversal = FolderTraversal(visited=[], skipped=[], service_count=1)
+
         with (
             patch(
-                "portolan_cli.extract.arcgis.orchestrator.discover_services"
+                "portolan_cli.extract.arcgis.orchestrator.discover_services_recursive"
             ) as mock_discover_services,
             patch(
                 "portolan_cli.extract.arcgis.orchestrator.discover_layers"
             ) as mock_discover_layers,
             patch("portolan_cli.extract.arcgis.orchestrator._extract_single_layer") as mock_extract,
         ):
-            mock_discover_services.return_value = (mock_services, [])
+            mock_discover_services.return_value = (mock_services, mock_traversal)
             mock_discover_layers.return_value = mock_census_layers
             mock_extract.return_value = (100, 2048, 2.5)
 
@@ -633,16 +639,18 @@ class TestServicesRootExtraction:
             ],
         )
 
+        mock_traversal = FolderTraversal(visited=[], skipped=[], service_count=2)
+
         with (
             patch(
-                "portolan_cli.extract.arcgis.orchestrator.discover_services"
+                "portolan_cli.extract.arcgis.orchestrator.discover_services_recursive"
             ) as mock_discover_services,
             patch(
                 "portolan_cli.extract.arcgis.orchestrator.discover_layers"
             ) as mock_discover_layers,
             patch("portolan_cli.extract.arcgis.orchestrator._extract_single_layer") as mock_extract,
         ):
-            mock_discover_services.return_value = (mock_services, [])
+            mock_discover_services.return_value = (mock_services, mock_traversal)
             mock_discover_layers.return_value = mock_census_layers
             mock_extract.return_value = (100, 2048, 2.5)
 
@@ -684,16 +692,18 @@ class TestServicesRootExtraction:
             ],
         )
 
+        mock_traversal = FolderTraversal(visited=[], skipped=[], service_count=1)
+
         with (
             patch(
-                "portolan_cli.extract.arcgis.orchestrator.discover_services"
+                "portolan_cli.extract.arcgis.orchestrator.discover_services_recursive"
             ) as mock_discover_services,
             patch(
                 "portolan_cli.extract.arcgis.orchestrator.discover_layers"
             ) as mock_discover_layers,
             patch("portolan_cli.extract.arcgis.orchestrator._extract_single_layer") as mock_extract,
         ):
-            mock_discover_services.return_value = (mock_services, [])
+            mock_discover_services.return_value = (mock_services, mock_traversal)
             mock_discover_layers.return_value = mock_single_layer
             mock_extract.return_value = (100, 2048, 2.5)
 
@@ -744,16 +754,18 @@ class TestServicesRootExtraction:
             ],
         )
 
+        mock_traversal = FolderTraversal(visited=[], skipped=[], service_count=1)
+
         with (
             patch(
-                "portolan_cli.extract.arcgis.orchestrator.discover_services"
+                "portolan_cli.extract.arcgis.orchestrator.discover_services_recursive"
             ) as mock_discover_services,
             patch(
                 "portolan_cli.extract.arcgis.orchestrator.discover_layers"
             ) as mock_discover_layers,
             patch("portolan_cli.extract.arcgis.orchestrator._extract_single_layer") as mock_extract,
         ):
-            mock_discover_services.return_value = (mock_services, [])
+            mock_discover_services.return_value = (mock_services, mock_traversal)
             mock_discover_layers.return_value = mock_multi_layers
             mock_extract.return_value = (100, 2048, 2.5)
 
@@ -803,16 +815,18 @@ class TestServicesRootExtraction:
             ],
         )
 
+        mock_traversal = FolderTraversal(visited=[], skipped=[], service_count=2)
+
         with (
             patch(
-                "portolan_cli.extract.arcgis.orchestrator.discover_services"
+                "portolan_cli.extract.arcgis.orchestrator.discover_services_recursive"
             ) as mock_discover_services,
             patch(
                 "portolan_cli.extract.arcgis.orchestrator.discover_layers"
             ) as mock_discover_layers,
             patch("portolan_cli.extract.arcgis.orchestrator._extract_single_layer") as mock_extract,
         ):
-            mock_discover_services.return_value = (mock_services, [])
+            mock_discover_services.return_value = (mock_services, mock_traversal)
             mock_discover_layers.side_effect = [mock_single, mock_multi]
             mock_extract.return_value = (100, 2048, 2.5)
 
@@ -1178,4 +1192,49 @@ def test_service_output_dir_nests_folders(tmp_path) -> None:  # type: ignore[no-
     )
 
 
-# TASKS_8_10_PLACEHOLDER
+# =============================================================================
+# Tasks 8 + 10: recursive folder discovery, scoping, routing, coverage
+# =============================================================================
+
+
+@pytest.mark.unit
+def test_discover_and_filter_scopes_to_folder(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    def fake_recursive(url, *, service_types=None, token=None, timeout=60.0, max_depth=2):  # type: ignore[no-untyped-def]  # noqa: ANN001
+        services = [
+            ServiceInfo("ecml/active_faults", "MapServer"),
+            ServiceInfo("water/rivers", "MapServer"),
+        ]
+        return services, FolderTraversal(visited=["ecml", "water"], skipped=[], service_count=2)
+
+    monkeypatch.setattr(
+        "portolan_cli.extract.arcgis.orchestrator.discover_services_recursive", fake_recursive
+    )
+    services, coverage = _discover_and_filter_services(
+        "https://x/rest/services", None, None, 60.0, token=None, folder="ecml"
+    )
+    assert [s.name for s in services] == ["ecml/active_faults"]
+    assert coverage is not None
+
+
+@pytest.mark.unit
+def test_extract_routes_folder_url_and_attaches_coverage(monkeypatch, tmp_path) -> None:  # type: ignore[no-untyped-def]
+    def fake_recursive(url, *, service_types=None, token=None, timeout=60.0, max_depth=2):  # type: ignore[no-untyped-def]  # noqa: ANN001
+        return (
+            [ServiceInfo("ecml/active_faults", "MapServer")],
+            FolderTraversal(visited=["ecml"], skipped=[], service_count=1),
+        )
+
+    monkeypatch.setattr(
+        "portolan_cli.extract.arcgis.orchestrator.discover_services_recursive", fake_recursive
+    )
+    monkeypatch.setattr(
+        "portolan_cli.extract.arcgis.orchestrator._collect_layers_from_services",
+        lambda services, base_url, timeout: ([], {}, {}, []),
+    )
+    report = extract_arcgis_catalog(
+        url="https://x/server/rest/services/ecml",
+        output_dir=tmp_path / "out",
+        options=ExtractionOptions(dry_run=True),
+    )
+    assert report.folder_coverage is not None
+    assert report.folder_coverage.folders_visited == ["ecml"]
