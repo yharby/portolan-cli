@@ -199,10 +199,11 @@ class TestParseArcGISURLInvalid:
         with pytest.raises(InvalidArcGISURLError):
             parse_arcgis_url("not-a-url")
 
-    def test_invalid_partial_services_path(self) -> None:
-        """Partial services path without server type should raise error."""
-        with pytest.raises(InvalidArcGISURLError):
-            parse_arcgis_url("https://example.com/rest/services/Census")
+    def test_folder_scoped_path_is_now_valid(self) -> None:
+        """A services path with only a folder name is now a valid SERVICES_FOLDER URL."""
+        result = parse_arcgis_url("https://example.com/rest/services/Census")
+        assert result.url_type == ArcGISURLType.SERVICES_FOLDER
+        assert result.folder == "Census"
 
     def test_image_server_is_now_supported(self) -> None:
         """ImageServer is now supported (raster extraction added)."""
@@ -300,3 +301,33 @@ class TestRealWorldURLs:
         result = parse_arcgis_url(url)
 
         assert result.url_type == ArcGISURLType.SERVICES_ROOT
+
+
+@pytest.mark.unit
+def test_parse_folder_url() -> None:
+    r = parse_arcgis_url("https://x/server/rest/services/NationalDatasets")
+    assert r.url_type == ArcGISURLType.SERVICES_FOLDER
+    assert r.folder == "NationalDatasets"
+    assert r.base_url == "https://x/server/rest/services"
+    assert r.is_single_service is False
+
+
+@pytest.mark.unit
+def test_parse_folder_url_unicode() -> None:
+    r = parse_arcgis_url("https://x/server/rest/services/ecml")
+    assert r.url_type == ArcGISURLType.SERVICES_FOLDER
+    assert r.folder == "ecml"
+
+
+@pytest.mark.unit
+def test_service_in_folder_still_parses_as_service() -> None:
+    r = parse_arcgis_url("https://x/server/rest/services/NationalDatasets/Property/MapServer")
+    assert r.url_type == ArcGISURLType.MAP_SERVER
+    assert r.service_name == "NationalDatasets/Property"
+
+
+@pytest.mark.unit
+def test_bare_services_root_still_parses() -> None:
+    r = parse_arcgis_url("https://x/server/rest/services")
+    assert r.url_type == ArcGISURLType.SERVICES_ROOT
+    assert r.folder is None

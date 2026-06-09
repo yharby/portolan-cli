@@ -28,6 +28,7 @@ class ArcGISURLType(Enum):
     MAP_SERVER = "MapServer"
     IMAGE_SERVER = "ImageServer"
     SERVICES_ROOT = "services"
+    SERVICES_FOLDER = "services_folder"
 
 
 class InvalidArcGISURLError(PortolanError):
@@ -51,21 +52,26 @@ class ParsedArcGISURL:
     """Result of parsing an ArcGIS REST URL.
 
     Attributes:
-        url_type: Type of endpoint (FeatureServer, MapServer, or services root)
-        base_url: URL without layer ID or query parameters
-        service_name: Extracted service name (None for services root)
+        url_type: Type of endpoint (FeatureServer, MapServer, ImageServer, services root, or services folder)
+        base_url: URL without layer ID or query parameters; for SERVICES_FOLDER this is the true services root
+        service_name: Extracted service name (None for services root or folder)
         layer_id: Layer ID if specified in URL (None otherwise)
+        folder: Folder name for SERVICES_FOLDER URLs (None for all other types)
     """
 
     url_type: ArcGISURLType
     base_url: str
     service_name: str | None
     layer_id: int | None
+    folder: str | None = None
 
     @property
     def is_single_service(self) -> bool:
-        """Whether this URL targets a single service (vs services root)."""
-        return self.url_type != ArcGISURLType.SERVICES_ROOT
+        """Whether this URL targets a single service (vs a services root/folder)."""
+        return self.url_type not in (
+            ArcGISURLType.SERVICES_ROOT,
+            ArcGISURLType.SERVICES_FOLDER,
+        )
 
     @property
     def service_endpoint_name(self) -> str | None:
@@ -97,6 +103,12 @@ _IMAGE_SERVER_PATTERN = re.compile(
 # Match: /rest/services at the end (services root)
 _SERVICES_ROOT_PATTERN = re.compile(
     r"/rest/services/?$",
+    re.IGNORECASE,
+)
+
+# Match: /rest/services/<folder-path> (no server-type segment) -> folder-scoped root
+_SERVICES_FOLDER_PATTERN = re.compile(
+    r"/rest/services/(.+?)/?$",
     re.IGNORECASE,
 )
 
@@ -204,6 +216,23 @@ def parse_arcgis_url(url: str) -> ParsedArcGISURL:
             base_url=base_url,
             service_name=None,
             layer_id=None,
+        )
+
+    # Try to match a folder-scoped services root: /rest/services/<folder>
+    # (reached only when no FeatureServer/MapServer/ImageServer matched)
+    folder_match = _SERVICES_FOLDER_PATTERN.search(url_path)
+    if folder_match:
+        folder = folder_match.group(1).strip("/")
+        # base_url is the true services root (folder stripped) so qualified
+        # service names from discovery resolve correctly via ServiceInfo.get_url.
+        services_idx = url_path.lower().find("/rest/services") + len("/rest/services")
+        base_url = url_path[:services_idx].rstrip("/")
+        return ParsedArcGISURL(
+            url_type=ArcGISURLType.SERVICES_FOLDER,
+            base_url=base_url,
+            service_name=None,
+            layer_id=None,
+            folder=folder,
         )
 
     # No match - not a recognized ArcGIS URL
