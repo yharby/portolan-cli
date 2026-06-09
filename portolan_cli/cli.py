@@ -6079,27 +6079,40 @@ def _handle_list_services_mode(
     service_filter: list[str] | None,
     timeout: float,
     use_json: bool,
+    *,
+    token: str | None = None,
+    recurse: bool = True,
 ) -> None:
     """Handle --list-services mode: list available services and exit."""
     from portolan_cli.extract.arcgis.orchestrator import list_services as list_services_func
 
     try:
-        result = list_services_func(url, service_filter=service_filter, timeout=timeout)
+        result = list_services_func(
+            url, service_filter=service_filter, token=token, recurse=recurse, timeout=timeout
+        )
     except Exception as e:
         _output_extract_error(use_json, type(e).__name__, str(e), url)
         raise SystemExit(1) from None
 
     if use_json:
         click.echo(json.dumps(result.to_dict(), indent=2))
-    else:
-        click.echo(f"Services at {url}:")
-        click.echo()
-        for svc in result.services:
-            click.echo(f"  • {svc.name} ({svc.service_type})")
-        click.echo()
-        click.echo(f"Total: {len(result.services)} services")
-        if result.folders:
-            click.echo(f"Folders: {', '.join(result.folders)}")
+        return
+
+    click.echo(f"Services at {url}:")
+    click.echo()
+    for svc in result.services:
+        click.echo(f"  • {svc.name} ({svc.service_type})")
+    click.echo()
+    click.echo(f"Total: {len(result.services)} services")
+    if result.coverage is not None:
+        cov = result.coverage
+        click.echo(
+            f"Folders traversed: {len(cov.folders_visited)}, skipped: {len(cov.folders_skipped)}"
+        )
+        for folder, reason in cov.folders_skipped:
+            click.echo(f"  ⚠ skipped {folder}: {reason}")
+    elif result.folders:
+        click.echo(f"Folders: {', '.join(result.folders)}")
 
 
 def _validate_collection_name_cli(
@@ -6315,6 +6328,10 @@ def _output_extract_result(
             ],
         }
 
+        coverage = getattr(report, "folder_coverage", None)
+        if coverage is not None:
+            data["folder_coverage"] = coverage.to_dict()
+
         if report.summary.failed > 0:
             # Emit error envelope for partial failures
             failed_layers = [
@@ -6373,6 +6390,16 @@ def _output_extract_result(
     info_output(f"Output: {output_dir}")
     info_output(f"Report: {output_dir}/.portolan/extraction-report.json")
 
+    coverage = getattr(report, "folder_coverage", None)
+    if coverage is not None:
+        info_output(
+            f"Folders traversed: {len(coverage.folders_visited)}, "
+            f"skipped: {len(coverage.folders_skipped)}, "
+            f"services found: {coverage.services_found}"
+        )
+        for folder, reason in coverage.folders_skipped:
+            warn(f"Skipped folder {folder}: {reason}")
+
 
 @cli.group()
 def extract() -> None:
@@ -6427,6 +6454,27 @@ def extract() -> None:
     "--list-services",
     is_flag=True,
     help="List available services without extracting (for services root URLs).",
+)
+@click.option(
+    "--token",
+    default=None,
+    help="ArcGIS token (or set ARCGIS_TOKEN). For secured services/folders.",
+)
+@click.option(
+    "--username",
+    default=None,
+    help="ArcGIS username (mints a token via generateToken).",
+)
+@click.option(
+    "--password",
+    default=None,
+    help="ArcGIS password (used with --username).",
+)
+@click.option(
+    "--no-recurse",
+    "no_recurse",
+    is_flag=True,
+    help="Do not traverse folders for services-root URLs (default: recurse).",
 )
 @click.option(
     "--workers",
@@ -6520,6 +6568,10 @@ def extract_arcgis_cmd(
     services: str | None,
     exclude_services: str | None,
     list_services: bool,
+    token: str | None,
+    username: str | None,
+    password: str | None,
+    no_recurse: bool,
     workers: int,
     retries: int,
     timeout: float,
@@ -6598,24 +6650,47 @@ def extract_arcgis_cmd(
         _output_extract_error(use_json, "InvalidURLError", str(e), url)
         raise SystemExit(1) from None
 
+    # Resolve credentials and token (token > username/password > ARCGIS_TOKEN env).
+    import os
+
+    from portolan_cli.extract.arcgis.auth import ArcGISCredentials, resolve_token
+
+    creds = ArcGISCredentials(
+        token=token or os.environ.get("ARCGIS_TOKEN"),
+        username=username,
+        password=password,
+    )
+    try:
+        resolved_token = resolve_token(creds, url, timeout=timeout) if not creds.is_empty else None
+    except Exception as e:  # ArcGISAuthError and transport errors
+        _output_extract_error(use_json, type(e).__name__, str(e), url)
+        raise SystemExit(1) from None
+
     # Handle --list-services mode
     if list_services:
-        if parsed.url_type != ArcGISURLType.SERVICES_ROOT:
+        if parsed.url_type not in (
+            ArcGISURLType.SERVICES_ROOT,
+            ArcGISURLType.SERVICES_FOLDER,
+        ):
             _output_extract_error(
                 use_json,
                 "InvalidURLError",
-                "--list-services requires a services root URL (ending with /rest/services)",
+                "--list-services requires a services root or folder URL",
                 url,
             )
             raise SystemExit(1)
         service_filter = _parse_filter_patterns(services)
-        _handle_list_services_mode(url, service_filter, timeout, use_json)
+        _handle_list_services_mode(
+            url, service_filter, timeout, use_json, token=resolved_token, recurse=not no_recurse
+        )
         return
 
     # Default output directory from service name (or "services_extract" for services root)
     if output_dir is None:
         if parsed.url_type == ArcGISURLType.SERVICES_ROOT:
             output_dir = Path("services_extract")
+        elif parsed.url_type == ArcGISURLType.SERVICES_FOLDER:
+            output_dir = Path((parsed.folder or "services_extract").replace("/", "_").lower())
         else:
             service_name = parsed.service_name or "arcgis_extract"
             output_dir = Path(service_name.replace("/", "_").lower())
@@ -6656,6 +6731,8 @@ def extract_arcgis_cmd(
         resume=resume,
         dry_run=dry_run,
         raw=raw,
+        token=resolved_token,
+        recurse=not no_recurse,
     )
 
     # Progress callback for text output
