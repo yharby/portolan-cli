@@ -440,46 +440,56 @@ class TestListServices:
 
     def test_list_services_returns_services_only(self) -> None:
         """list_services should return services without probing for layers."""
+        from portolan_cli.extract.arcgis.discovery import FolderTraversal
+
         mock_services = [
             ServiceInfo(name="Census_2020", service_type="FeatureServer"),
             ServiceInfo(name="Transportation", service_type="MapServer"),
             ServiceInfo(name="Basemap", service_type="MapServer"),
         ]
+        mock_traversal = FolderTraversal(
+            visited=["Archived", "Internal"], skipped=[], service_count=3
+        )
 
-        with patch("portolan_cli.extract.arcgis.orchestrator.discover_services") as mock_discover:
-            mock_discover.return_value = (mock_services, ["Archived", "Internal"])
+        with patch(
+            "portolan_cli.extract.arcgis.orchestrator.discover_services_recursive"
+        ) as mock_discover:
+            mock_discover.return_value = (mock_services, mock_traversal)
 
             result = list_services(TEST_SERVICES_ROOT_URL)
 
-            # Should call discover_services with return_folders=True
+            # Should call discover_services_recursive
             mock_discover.assert_called_once()
-            call_kwargs = mock_discover.call_args.kwargs
-            assert call_kwargs.get("return_folders") is True
 
             # Should return all services
             assert len(result.services) == 3
             assert result.services[0].name == "Census_2020"
             assert result.services[1].name == "Transportation"
 
-            # Should include folders
+            # Should include folders from traversal
             assert result.folders == ["Archived", "Internal"]
 
     def test_list_services_filters_by_type(self) -> None:
         """list_services should filter by service type."""
+        from portolan_cli.extract.arcgis.discovery import FolderTraversal
+
         mock_services = [
             ServiceInfo(name="Census_2020", service_type="FeatureServer"),
             ServiceInfo(name="Transportation", service_type="MapServer"),
         ]
+        mock_traversal = FolderTraversal(visited=[], skipped=[], service_count=2)
 
-        with patch("portolan_cli.extract.arcgis.orchestrator.discover_services") as mock_discover:
-            mock_discover.return_value = (mock_services, [])
+        with patch(
+            "portolan_cli.extract.arcgis.orchestrator.discover_services_recursive"
+        ) as mock_discover:
+            mock_discover.return_value = (mock_services, mock_traversal)
 
             result = list_services(
                 TEST_SERVICES_ROOT_URL,
                 service_types=["FeatureServer"],
             )
 
-            # discover_services should be called with service_types filter
+            # discover_services_recursive should be called with service_types filter
             mock_discover.assert_called_once()
             call_kwargs = mock_discover.call_args.kwargs
             assert call_kwargs.get("service_types") == ["FeatureServer"]
@@ -489,14 +499,19 @@ class TestListServices:
 
     def test_list_services_applies_glob_filter(self) -> None:
         """list_services should apply glob pattern filters."""
+        from portolan_cli.extract.arcgis.discovery import FolderTraversal
+
         mock_services = [
             ServiceInfo(name="Census_2020", service_type="FeatureServer"),
             ServiceInfo(name="Census_2010", service_type="FeatureServer"),
             ServiceInfo(name="Transportation", service_type="MapServer"),
         ]
+        mock_traversal = FolderTraversal(visited=[], skipped=[], service_count=3)
 
-        with patch("portolan_cli.extract.arcgis.orchestrator.discover_services") as mock_discover:
-            mock_discover.return_value = (mock_services, [])
+        with patch(
+            "portolan_cli.extract.arcgis.orchestrator.discover_services_recursive"
+        ) as mock_discover:
+            mock_discover.return_value = (mock_services, mock_traversal)
 
             result = list_services(
                 TEST_SERVICES_ROOT_URL,
@@ -508,8 +523,8 @@ class TestListServices:
             assert all("Census" in s.name for s in result.services)
 
     def test_list_services_raises_for_non_services_root(self) -> None:
-        """list_services should raise error for non-services-root URLs."""
-        with pytest.raises(ValueError, match="not a services root URL"):
+        """list_services should raise error for non-services-root or folder URLs."""
+        with pytest.raises(ValueError, match="not a services root or folder URL"):
             list_services(TEST_FEATURE_SERVER_URL)
 
 
@@ -1021,6 +1036,7 @@ class TestArcGISCollectionMetadataSeeding:
             mock_fetch.assert_not_called()
 
     def test_seed_collection_metadata_arcgis_nested_output_path(self, tmp_path: Path) -> None:
+
         """Collection seeding handles nested output paths correctly."""
         from portolan_cli.extract.arcgis.orchestrator import _seed_collection_metadata_arcgis
         from portolan_cli.extract.common.report import (
@@ -1089,3 +1105,36 @@ class TestArcGISCollectionMetadataSeeding:
         assert metadata_path.exists()
         content = metadata_path.read_text()
         assert "Description from ArcGIS API" in content
+
+
+# =============================================================================
+# list_services folder recursion + coverage tests
+# =============================================================================
+
+
+@pytest.mark.unit
+def test_list_services_recurses_and_reports_coverage(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    from portolan_cli.extract.arcgis.discovery import FolderTraversal, ServiceInfo
+    from portolan_cli.extract.arcgis.orchestrator import list_services
+
+    def fake_recursive(url, *, service_types=None, token=None, timeout=60.0, max_depth=2):  # type: ignore[no-untyped-def]  # noqa: ANN001
+        services = [
+            ServiceInfo("Top", "MapServer"),
+            ServiceInfo("NationalDatasets/Property", "MapServer"),
+        ]
+        traversal = FolderTraversal(
+            visited=["NationalDatasets"], skipped=[("Locked", "499")], service_count=2
+        )
+        return services, traversal
+
+    monkeypatch.setattr(
+        "portolan_cli.extract.arcgis.orchestrator.discover_services_recursive", fake_recursive
+    )
+    result = list_services("https://x/rest/services")
+    names = [s.name for s in result.services]
+    assert "NationalDatasets/Property" in names
+    assert result.coverage is not None
+    assert result.coverage.folders_visited == ["NationalDatasets"]
+    assert result.coverage.folders_skipped == [("Locked", "499")]
+    d = result.to_dict()
+    assert d["folder_coverage"]["folders_skipped"] == [{"folder": "Locked", "reason": "499"}]

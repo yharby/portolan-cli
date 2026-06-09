@@ -30,11 +30,13 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from portolan_cli.extract.arcgis.discovery import (
+    FolderTraversal,
     LayerInfo,
     ServiceDiscoveryResult,
     ServiceInfo,
     discover_layers,
     discover_services,
+    discover_services_recursive,
 )
 from portolan_cli.extract.arcgis.metadata import extract_arcgis_metadata
 from portolan_cli.extract.arcgis.url_parser import (
@@ -46,6 +48,7 @@ from portolan_cli.extract.common.filters import filter_layers
 from portolan_cli.extract.common.report import (
     ExtractionReport,
     ExtractionSummary,
+    FolderCoverage,
     LayerResult,
     MetadataExtracted,
     load_report,
@@ -63,6 +66,15 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _coverage_from_traversal(traversal: FolderTraversal) -> FolderCoverage:
+    """Map a discovery FolderTraversal to a serializable FolderCoverage."""
+    return FolderCoverage(
+        folders_visited=traversal.visited,
+        folders_skipped=traversal.skipped,
+        services_found=traversal.service_count,
+    )
+
+
 @dataclass
 class ServicesRootDiscoveryResult:
     """Result of listing services from a services root URL.
@@ -73,15 +85,17 @@ class ServicesRootDiscoveryResult:
         services: List of discovered services.
         folders: List of folder names in the services root.
         base_url: The services root URL that was queried.
+        coverage: Optional folder traversal coverage when recursion was used.
     """
 
     services: list[ServiceInfo]
     folders: list[str]
     base_url: str
+    coverage: FolderCoverage | None = None
 
     def to_dict(self) -> dict[str, object]:
         """Convert to JSON-serializable dict."""
-        return {
+        result: dict[str, object] = {
             "base_url": self.base_url,
             "services": [
                 {
@@ -94,6 +108,9 @@ class ServicesRootDiscoveryResult:
             "folders": self.folders,
             "total_services": len(self.services),
         }
+        if self.coverage is not None:
+            result["folder_coverage"] = self.coverage.to_dict()
+        return result
 
 
 def list_services(
@@ -101,42 +118,54 @@ def list_services(
     *,
     service_types: Sequence[str] | None = None,
     service_filter: list[str] | None = None,
+    token: str | None = None,
+    recurse: bool = True,
     timeout: float = 60.0,
 ) -> ServicesRootDiscoveryResult:
-    """List services from an ArcGIS services root URL.
+    """List services from an ArcGIS services root or folder URL.
 
-    This is a lightweight discovery operation that does NOT probe each service
-    for layers. Use this for --list-services mode.
+    Recurses into folders by default. Folders that error are skipped and
+    recorded in the returned coverage.
 
     Args:
-        url: ArcGIS services root URL (must end with /rest/services).
+        url: ArcGIS services root or folder URL.
         service_types: Filter by service types (e.g., ["FeatureServer"]).
         service_filter: Glob patterns to filter service names.
+        token: Optional ArcGIS token for authenticated endpoints.
+        recurse: Whether to recurse into sub-folders (default True).
         timeout: Request timeout in seconds.
 
     Returns:
-        ServicesRootDiscoveryResult with services and folders.
+        ServicesRootDiscoveryResult with services, folders, and optional coverage.
 
     Raises:
-        ValueError: If URL is not a services root URL.
+        ValueError: If URL is not a services root or folder URL.
     """
     from portolan_cli.extract.arcgis.filters import filter_services
 
-    # Parse URL to verify it's a services root
     parsed = parse_arcgis_url(url)
-    if parsed.url_type != ArcGISURLType.SERVICES_ROOT:
-        msg = f"URL is not a services root URL: {url}"
+    if parsed.url_type not in (ArcGISURLType.SERVICES_ROOT, ArcGISURLType.SERVICES_FOLDER):
+        msg = f"URL is not a services root or folder URL: {url}"
         raise ValueError(msg)
 
-    # Discover services
-    services, folders = discover_services(
-        url,
-        service_types=list(service_types) if service_types else None,
-        return_folders=True,
-        timeout=timeout,
-    )
+    if recurse:
+        services, traversal = discover_services_recursive(
+            url,
+            service_types=list(service_types) if service_types else None,
+            token=token,
+            timeout=timeout,
+        )
+        coverage: FolderCoverage | None = _coverage_from_traversal(traversal)
+        folders = traversal.visited
+    else:
+        services, folders = discover_services(
+            url,
+            service_types=list(service_types) if service_types else None,
+            return_folders=True,
+            timeout=timeout,
+        )
+        coverage = None
 
-    # Apply service filter if provided
     if service_filter:
         service_names = [s.name for s in services]
         filtered_names = filter_services(
@@ -150,6 +179,7 @@ def list_services(
         services=services,
         folders=folders,
         base_url=parsed.base_url,
+        coverage=coverage,
     )
 
 
