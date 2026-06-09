@@ -159,9 +159,6 @@ def _fetch_json(url: str, timeout: float = 60.0, token: str | None = None) -> di
             data = cast("dict[str, Any]", response.json())
     except ArcGISDiscoveryError:
         raise
-    except httpx.HTTPStatusError as e:
-        msg = f"Failed to fetch from {url}: HTTP {e.response.status_code}"
-        raise ArcGISDiscoveryError(msg) from e
     except httpx.RequestError as e:
         msg = f"Failed to fetch from {url}: {e}"
         raise ArcGISDiscoveryError(msg) from e

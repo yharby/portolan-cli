@@ -178,18 +178,6 @@ class TestDiscoverLayers:
             assert result.service_description is None
             assert result.copyright_text is None
 
-    def test_raises_on_http_error(self) -> None:
-        """Should raise ArcGISDiscoveryError on HTTP errors."""
-        with patch("portolan_cli.extract.arcgis.discovery.httpx.Client") as mock_client:
-            mock_client.return_value.__enter__.return_value.get.side_effect = httpx.HTTPStatusError(
-                "Not Found",
-                request=httpx.Request("GET", "https://example.com"),
-                response=httpx.Response(404),
-            )
-
-            with pytest.raises(ArcGISDiscoveryError, match="Failed to fetch"):
-                discover_layers("https://services.arcgis.com/test/FeatureServer")
-
     def test_raises_on_invalid_json(self) -> None:
         """Should raise ArcGISDiscoveryError on invalid JSON response."""
         with patch("portolan_cli.extract.arcgis.discovery.httpx.Client") as mock_client:
@@ -359,7 +347,7 @@ from portolan_cli.extract.arcgis.discovery import _fetch_json  # noqa: E402
 def test_fetch_json_raises_on_embedded_error(monkeypatch: pytest.MonkeyPatch) -> None:
     """Should raise ArcGISDiscoveryError when ArcGIS returns an embedded error body."""
 
-    def fake_get(self: object, url: str) -> httpx.Response:  # noqa: ANN001
+    def fake_get(self: object, url: str) -> httpx.Response:
         return httpx.Response(200, json={"error": {"code": 499, "message": "Token Required"}})
 
     monkeypatch.setattr(httpx.Client, "get", fake_get)
@@ -372,10 +360,22 @@ def test_fetch_json_appends_token(monkeypatch: pytest.MonkeyPatch) -> None:
     """Should append token=<token> to the request URL when token is provided."""
     seen: dict[str, str] = {}
 
-    def fake_get(self: object, url: str) -> httpx.Response:  # noqa: ANN001
+    def fake_get(self: object, url: str) -> httpx.Response:
         seen["url"] = url
         return httpx.Response(200, json={"services": [], "folders": []})
 
     monkeypatch.setattr(httpx.Client, "get", fake_get)
     _fetch_json("https://x/rest/services", token="ABC123")
     assert "token=ABC123" in seen["url"]
+
+
+@pytest.mark.unit
+def test_fetch_json_raises_on_http_error_status(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Should raise ArcGISDiscoveryError when the server returns a 4xx/5xx status."""
+
+    def fake_get(self: object, url: str) -> httpx.Response:
+        return httpx.Response(404, json={})
+
+    monkeypatch.setattr(httpx.Client, "get", fake_get)
+    with pytest.raises(ArcGISDiscoveryError, match="HTTP 404"):
+        _fetch_json("https://x/rest/services/Missing")
