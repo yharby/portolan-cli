@@ -32,7 +32,11 @@ class ArcGISCredentials:
 
 
 def apply_token(url: str, token: str) -> str:
-    """Append token=<token> to a URL."""
+    """Append token=<token> to a URL.
+
+    Note: discovery._append_query_param does the same thing generically;
+    consolidate both into a shared url util when #311 reworks auth.
+    """
     parsed = urlparse(url)
     params = parse_qs(parsed.query)
     params["token"] = [token]
@@ -40,6 +44,7 @@ def apply_token(url: str, token: str) -> str:
 
 
 def _with_json(url: str) -> str:
+    """Add f=json to url if not already set (setdefault semantics)."""
     parsed = urlparse(url)
     params = parse_qs(parsed.query)
     params.setdefault("f", ["json"])
@@ -100,7 +105,7 @@ def resolve_token(
         "password": creds.password,
         "client": "referer",
         "referer": referer,
-        "expiration": "60",
+        "expiration": "60",  # TODO(#311): make configurable, long runs can exceed 60 min
         "f": "json",
     }
 
