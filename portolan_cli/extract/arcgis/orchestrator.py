@@ -856,20 +856,33 @@ def _discover_and_filter_services(
     *,
     token: str | None = None,
     folder: str | None = None,
-) -> tuple[list[ServiceInfo], FolderCoverage]:
-    """Discover services recursively, scope to a folder, and apply filters.
+    recurse: bool = True,
+) -> tuple[list[ServiceInfo], FolderCoverage | None]:
+    """Discover services (recursively by default), scope to a folder, and apply filters.
 
-    Returns (services, coverage). When folder is set (SERVICES_FOLDER URL), only
-    services under that folder prefix are kept.
+    Returns (services, coverage). When recurse is False the flat (non-recursive)
+    discovery is used and coverage is None. When folder is set (SERVICES_FOLDER
+    URL) only services under that folder prefix are kept.
     """
     from portolan_cli.extract.arcgis.filters import filter_services
 
-    services, traversal = discover_services_recursive(
-        url,
-        service_types=["FeatureServer", "MapServer"],
-        token=token,
-        timeout=timeout,
-    )
+    coverage: FolderCoverage | None
+    if recurse:
+        services, traversal = discover_services_recursive(
+            url,
+            service_types=["FeatureServer", "MapServer"],
+            token=token,
+            timeout=timeout,
+        )
+        coverage = _coverage_from_traversal(traversal)
+    else:
+        services, _folders = discover_services(
+            url,
+            service_types=["FeatureServer", "MapServer"],
+            return_folders=True,
+            timeout=timeout,
+        )
+        coverage = None
 
     if folder:
         prefix = f"{folder.rstrip('/')}/"
@@ -885,7 +898,7 @@ def _discover_and_filter_services(
         )
         services = [s for s in services if s.name in filtered_names]
 
-    return services, _coverage_from_traversal(traversal)
+    return services, coverage
 
 
 def _collect_layers_from_services(
@@ -1008,6 +1021,7 @@ def _extract_services_root(
         options.timeout,
         token=options.token,
         folder=parsed.folder,
+        recurse=options.recurse,
     )
 
     # Collect layers from all services

@@ -445,8 +445,6 @@ class TestListServices:
 
     def test_list_services_returns_services_only(self) -> None:
         """list_services should return services without probing for layers."""
-        from portolan_cli.extract.arcgis.discovery import FolderTraversal
-
         mock_services = [
             ServiceInfo(name="Census_2020", service_type="FeatureServer"),
             ServiceInfo(name="Transportation", service_type="MapServer"),
@@ -476,8 +474,6 @@ class TestListServices:
 
     def test_list_services_filters_by_type(self) -> None:
         """list_services should filter by service type."""
-        from portolan_cli.extract.arcgis.discovery import FolderTraversal
-
         mock_services = [
             ServiceInfo(name="Census_2020", service_type="FeatureServer"),
             ServiceInfo(name="Transportation", service_type="MapServer"),
@@ -504,8 +500,6 @@ class TestListServices:
 
     def test_list_services_applies_glob_filter(self) -> None:
         """list_services should apply glob pattern filters."""
-        from portolan_cli.extract.arcgis.discovery import FolderTraversal
-
         mock_services = [
             ServiceInfo(name="Census_2020", service_type="FeatureServer"),
             ServiceInfo(name="Census_2010", service_type="FeatureServer"),
@@ -1128,9 +1122,6 @@ class TestArcGISCollectionMetadataSeeding:
 
 @pytest.mark.unit
 def test_list_services_recurses_and_reports_coverage(monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    from portolan_cli.extract.arcgis.discovery import FolderTraversal, ServiceInfo
-    from portolan_cli.extract.arcgis.orchestrator import list_services
-
     captured: dict[str, object] = {}
 
     def fake_recursive(url, *, service_types=None, token=None, timeout=60.0, max_depth=2):  # type: ignore[no-untyped-def]  # noqa: ANN001
@@ -1161,9 +1152,6 @@ def test_list_services_recurses_and_reports_coverage(monkeypatch) -> None:  # ty
 @pytest.mark.unit
 def test_list_services_no_recurse_skips_coverage(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     """recurse=False calls discover_services (not recursive), returns coverage=None."""
-    from portolan_cli.extract.arcgis.discovery import ServiceInfo
-    from portolan_cli.extract.arcgis.orchestrator import list_services
-
     def fake_discover(url, *, service_types=None, return_folders=False, timeout=60.0):  # type: ignore[no-untyped-def]  # noqa: ANN001
         assert return_folders is True
         return [ServiceInfo("Top", "MapServer")], ["SomeFolder"]
@@ -1238,3 +1226,19 @@ def test_extract_routes_folder_url_and_attaches_coverage(monkeypatch, tmp_path) 
     )
     assert report.folder_coverage is not None
     assert report.folder_coverage.folders_visited == ["ecml"]
+
+
+@pytest.mark.unit
+def test_discover_and_filter_no_recurse_uses_flat_discovery(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    def fake_flat(url, *, service_types=None, return_folders=False, timeout=60.0):  # noqa: ANN001
+        assert return_folders is True
+        return [ServiceInfo("Top", "MapServer")], ["SomeFolder"]
+
+    monkeypatch.setattr(
+        "portolan_cli.extract.arcgis.orchestrator.discover_services", fake_flat
+    )
+    services, coverage = _discover_and_filter_services(
+        "https://x/rest/services", None, None, 60.0, recurse=False
+    )
+    assert [s.name for s in services] == ["Top"]
+    assert coverage is None
