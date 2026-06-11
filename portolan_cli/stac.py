@@ -19,6 +19,8 @@ from pathlib import Path
 import pystac
 from pystac.summaries import Summarizer, SummaryStrategy
 
+from portolan_cli.humanize import humanize_slug
+
 
 class MergeStrategy(Enum):
     """Strategy for merging existing metadata with auto-detected values.
@@ -94,7 +96,8 @@ def create_collection(
     Args:
         collection_id: Unique identifier for the collection.
         description: Human-readable description.
-        title: Optional display title (defaults to None).
+        title: Optional display title. Defaults to a human-readable title
+            derived from ``collection_id`` (Issue #502: titles are mandatory).
         license: SPDX license identifier (default: "proprietary").
         bbox: Spatial extent as [min_x, min_y, max_x, max_y] in WGS84.
               Defaults to global extent if not specified.
@@ -104,6 +107,15 @@ def create_collection(
     Returns:
         A pystac.Collection object.
     """
+    # Issue #502: titles and descriptions are mandatory and must be
+    # human-readable. Derive a title from the id when none is supplied, and
+    # fall back to the title for an empty description rather than leaving a
+    # placeholder like "Collection: <slug>".
+    if not title:
+        title = humanize_slug(collection_id)
+    if not description:
+        description = title
+
     # Default to global extent if not specified
     if bbox is None:
         bbox = [-180, -90, 180, 90]
@@ -156,6 +168,12 @@ def create_item(
 
     # Merge any custom properties
     item_properties = dict(properties) if properties else {}
+
+    # Issue #502: items must carry a human-readable title for STAC Browser.
+    # Derive one from the item id when source metadata didn't supply a usable
+    # title (humanize_slug also normalizes technical ids).
+    if not item_properties.get("title") or is_technical_name(str(item_properties.get("title"))):
+        item_properties["title"] = humanize_slug(item_id)
 
     # Per ADR-0035: If datetime not provided, mark as provisional so
     # portolan check can flag incomplete items.
@@ -438,6 +456,31 @@ def add_collection_properties_from_metadata(
             collection.stac_extensions = []
         if proj_ext_url not in collection.stac_extensions:
             collection.stac_extensions.append(proj_ext_url)
+
+
+def apply_human_titles(collection: pystac.Collection, metadata: object) -> None:
+    """Apply human-authored title/description from metadata.yaml (Issue #502).
+
+    Per ADR-0038 (revised), ``metadata.yaml`` may carry optional ``title`` and
+    ``description`` keys as the human override for the auto-derived values.
+    These are the highest-precedence source: a human-authored title always wins
+    over the slug-humanized default. Missing/blank values leave the existing
+    collection title/description untouched.
+
+    Args:
+        collection: The collection to update in place.
+        metadata: The merged metadata.yaml mapping (other types are ignored).
+    """
+    if not isinstance(metadata, dict):
+        return
+
+    title = metadata.get("title")
+    if isinstance(title, str) and title.strip():
+        collection.title = title.strip()
+
+    description = metadata.get("description")
+    if isinstance(description, str) and description.strip():
+        collection.description = description.strip()
 
 
 def add_partition_metadata_to_collection(
@@ -1268,7 +1311,7 @@ def add_via_link(
     if not collection_path.exists():
         return
 
-    collection_data = json.loads(collection_path.read_text())
+    collection_data = json.loads(collection_path.read_text(encoding="utf-8"))
     links = collection_data.setdefault("links", [])
 
     # Check if via link already exists with same href
@@ -1285,7 +1328,7 @@ def add_via_link(
     }
     links.append(via_link)
 
-    collection_path.write_text(json.dumps(collection_data, indent=2) + "\n")
+    collection_path.write_text(json.dumps(collection_data, indent=2) + "\n", encoding="utf-8")
 
 
 def is_technical_name(text: str | None) -> bool:
@@ -1382,7 +1425,7 @@ def update_stac_metadata(
         return False
 
     try:
-        stac_data = json.loads(path.read_text())
+        stac_data = json.loads(path.read_text(encoding="utf-8"))
     except json.JSONDecodeError as e:
         import logging
 
@@ -1402,6 +1445,8 @@ def update_stac_metadata(
         updated = True
 
     if updated:
-        path.write_text(json.dumps(stac_data, indent=2, ensure_ascii=False) + "\n")
+        path.write_text(
+            json.dumps(stac_data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
+        )
 
     return updated
