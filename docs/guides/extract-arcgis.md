@@ -54,10 +54,11 @@ This will:
 1. Discover all layers in the service
 2. Extract each layer to GeoParquet format
 3. Apply Hilbert spatial sorting for efficient queries
-4. Initialize a Portolan catalog with STAC metadata
-5. Add `via` provenance links to each collection (pointing to source layer URL)
-6. Seed `.portolan/metadata.yaml` with values from the service
-7. Generate an extraction report in `.portolan/extraction-report.json`
+4. Extract layer styles as Mapbox GL JSON and register as STAC assets
+5. Initialize a Portolan catalog with STAC metadata
+6. Add `via` provenance links to each collection (pointing to source layer URL)
+7. Seed `.portolan/metadata.yaml` with values from the service
+8. Generate an extraction report in `.portolan/extraction-report.json`
 
 ### Filtering Layers
 
@@ -280,6 +281,9 @@ portolan extract arcgis URL --timeout 120
 
 # Retry failed requests (default: 3 attempts)
 portolan extract arcgis URL --retries 5
+
+# Skip style extraction (default: styles are extracted)
+portolan extract arcgis URL --no-styles
 ```
 
 ### Resume Failed Extractions

@@ -39,6 +39,7 @@ from portolan_cli.extract.common.report import (
 )
 from portolan_cli.extract.common.resume import ResumeState, get_resume_state, should_process_layer
 from portolan_cli.extract.common.retry import RetryConfig, retry_with_backoff
+from portolan_cli.extract.common.styles import extract_wms_legend, extract_wms_style
 from portolan_cli.extract.wfs.discovery import LayerInfo, WFSDiscoveryResult, discover_layers
 
 if TYPE_CHECKING:
@@ -65,6 +66,7 @@ class ExtractionOptions:
         resume: Whether to resume from existing extraction report.
         raw: If True, skip auto-init (only create extraction files, no STAC catalog).
         dry_run: If True, list layers without extracting.
+        no_styles: If True, skip style extraction from WMS GetStyles.
         wfs_version: WFS version ("1.0.0", "1.1.0", "2.0.0", or "auto").
             When "auto", the version is negotiated with the server once and
             used consistently for both discovery and extraction.
@@ -81,6 +83,7 @@ class ExtractionOptions:
     resume: bool = False
     raw: bool = False
     dry_run: bool = False
+    no_styles: bool = False
     wfs_version: str = "auto"
     output_crs: str | None = None
     bbox: tuple[float, float, float, float] | None = None
@@ -566,6 +569,27 @@ def _extract_layer_task(
 
     if result.success:
         features, size_bytes, duration = result.value  # type: ignore[misc]
+
+        # Extract style from WMS GetStyles (Issue #490)
+        if not options.no_styles:
+            style_result = extract_wms_style(
+                wfs_url=url,
+                layer_name=layer.name,
+                collection_path=collection_dir,
+                source_layer=layer_slug,
+            )
+            if style_result:
+                logger.debug("Extracted style for %s: %s", layer.name, style_result.path)
+
+            # Extract legend from WMS GetLegendGraphic (Issue #498)
+            legend_result = extract_wms_legend(
+                wfs_url=url,
+                layer_name=layer.name,
+                collection_path=collection_dir,
+            )
+            if legend_result:
+                logger.debug("Extracted legend for %s: %s", layer.name, legend_result.path)
+
         return LayerResult(
             id=layer.id,
             name=layer.name,
@@ -800,6 +824,27 @@ def _auto_init_catalog(
         paths=parquet_files,
         catalog_root=output_dir,
     )
+
+    # Register extracted styles and legends as STAC assets (Issue #490, #498)
+    from portolan_cli.style import (
+        discover_legends,
+        discover_styles,
+        register_legend_assets,
+        register_style_assets,
+    )
+
+    for result in report.layers:
+        if result.status == "success" and result.output_path:
+            collection_dir = output_dir / Path(result.output_path).parent
+            styles = discover_styles(collection_dir)
+            if styles:
+                register_style_assets(collection_dir, styles)
+                logger.debug("Registered %d style(s) for %s", len(styles), result.name)
+
+            legends = discover_legends(collection_dir)
+            if legends:
+                register_legend_assets(collection_dir, legends)
+                logger.debug("Registered %d legend(s) for %s", len(legends), result.name)
 
     # Add via links for provenance tracking
     _add_via_links_to_collections(output_dir, report)

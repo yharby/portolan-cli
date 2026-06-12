@@ -53,6 +53,7 @@ from portolan_cli.extract.common.report import (
 )
 from portolan_cli.extract.common.resume import ResumeState, get_resume_state, should_process_layer
 from portolan_cli.extract.common.retry import RetryConfig, retry_with_backoff
+from portolan_cli.extract.common.styles import extract_esri_style
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
@@ -203,6 +204,7 @@ class ExtractionOptions:
         dry_run: If True, list layers without extracting
         sort_hilbert: Whether to apply Hilbert spatial sorting
         raw: If True, skip auto-init (only create extraction files, no STAC catalog)
+        no_styles: If True, skip style extraction from ESRI drawingInfo
     """
 
     workers: int = 3
@@ -212,6 +214,7 @@ class ExtractionOptions:
     raw: bool = False
     dry_run: bool = False
     sort_hilbert: bool = True
+    no_styles: bool = False
 
 
 @dataclass
@@ -426,6 +429,18 @@ def _extract_one_layer(
     if result.success:
         features, size_bytes, duration = result.value  # type: ignore[misc]
         _emit_progress(on_progress, index, total, layer.name, "success")
+
+        # Extract style from ESRI layer (Issue #490)
+        if not options.no_styles:
+            layer_url = f"{url.rstrip('/')}/{layer.id}"
+            style_result = extract_esri_style(
+                layer_url=layer_url,
+                collection_path=collection_dir,
+                source_layer=layer_slug,
+            )
+            if style_result:
+                logger.debug("Extracted style for %s: %s", layer.name, style_result.path)
+
         return LayerResult(
             id=layer.id,
             name=layer.name,
@@ -612,6 +627,17 @@ def _auto_init_catalog(output_dir: Path, report: ExtractionReport) -> None:
         paths=parquet_files,
         catalog_root=output_dir,
     )
+
+    # Register extracted styles as STAC assets (Issue #490)
+    from portolan_cli.style import discover_styles, register_style_assets
+
+    for result in report.layers:
+        if result.status == "success" and result.output_path:
+            collection_dir = output_dir / Path(result.output_path).parent
+            styles = discover_styles(collection_dir)
+            if styles:
+                register_style_assets(collection_dir, styles)
+                logger.debug("Registered %d style(s) for %s", len(styles), result.name)
 
     # Seed metadata.yaml from extracted service metadata
     _seed_metadata_from_extraction(output_dir, report)
@@ -1016,6 +1042,20 @@ def _extract_services_root(
 
         if result.success:
             features, size_bytes, duration = result.value  # type: ignore[misc]
+
+            # Extract style from ESRI layer (Issue #490)
+            if not options.no_styles:
+                layer_url = f"{service_url}/{layer.id}"
+                # collection_dir is service_dir for single-layer, or nested dir for multi
+                coll_dir = service_dir if is_single_layer else service_dir / layer_slug
+                style_result = extract_esri_style(
+                    layer_url=layer_url,
+                    collection_path=coll_dir,
+                    source_layer=layer_slug,
+                )
+                if style_result:
+                    logger.debug("Extracted style for %s: %s", layer.name, style_result.path)
+
             layer_results.append(
                 LayerResult(
                     id=layer.id,
