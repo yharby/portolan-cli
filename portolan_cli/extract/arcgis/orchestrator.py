@@ -229,7 +229,7 @@ def _service_output_dir(output_dir: Path, service_name: str) -> Path:
     "ecml/active_faults" -> output_dir/ecml/active_faults
     "Top"                -> output_dir/top
     Each path segment is slugified independently so the folder hierarchy is
-    preserved as nested subcatalogs (ADR-0032, ADR-0053).
+    preserved as nested subcatalogs (ADR-0032, ADR-0054).
     """
     parts = [_slugify(p) for p in service_name.split("/") if p]
     result = output_dir
